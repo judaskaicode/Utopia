@@ -1,3 +1,4 @@
+```python
 import asyncio
 import os
 import threading
@@ -10,8 +11,8 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
+    BotCommand,
 )
-
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -24,14 +25,13 @@ from telegram.ext import (
 
 
 # ============================================================
-# НАСТРОЙКИ
+# CONFIG
 # ============================================================
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = [
     int(x.strip())
-    for x in os.environ.get("ADMIN_IDS", "").split(",")
+    for x in os.getenv("ADMIN_IDS", "").split(",")
     if x.strip()
 ]
 
@@ -39,7 +39,7 @@ DB_PATH = "loyalty.sqlite"
 
 
 # ============================================================
-# КАТЕГОРИИ
+# CATEGORIES
 # ============================================================
 
 CATEGORIES = {
@@ -49,7 +49,7 @@ CATEGORIES = {
 
 
 # ============================================================
-# ГЛАВНОЕ МЕНЮ
+# MAIN MENU
 # ============================================================
 
 MAIN_MENU = ReplyKeyboardMarkup(
@@ -59,30 +59,29 @@ MAIN_MENU = ReplyKeyboardMarkup(
         ["ℹ️ Как это работает"],
         ["🔄 Сбросить"],
     ],
-    resize_keyboard=True
+    resize_keyboard=True,
 )
 
 
 # ============================================================
-# СОСТОЯНИЯ ПОКУПКИ
+# STATES
 # ============================================================
 
-PURCHASE_CATEGORY, PURCHASE_PHOTO, PURCHASE_AMOUNT = range(3)
+CATEGORY, RECEIPT, AMOUNT = range(3)
 
 
 # ============================================================
-# ВЕБ-СЕРВЕР ДЛЯ RENDER
+# RENDER HEALTH CHECK
 # ============================================================
 
 class HealthHandler(BaseHTTPRequestHandler):
-
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"UTOPIA bot is running")
+        self.wfile.write(b"UTOPIA BOT OK")
 
     def log_message(self, format, *args):
-        pass
+        return
 
 
 def run_health_server():
@@ -96,7 +95,6 @@ def run_health_server():
 # ============================================================
 
 async def init_db():
-
     async with aiosqlite.connect(DB_PATH) as db:
 
         await db.execute("""
@@ -105,79 +103,85 @@ async def init_db():
                 username TEXT,
                 first_name TEXT,
                 points INTEGER DEFAULT 0,
-                total_spent REAL DEFAULT 0
+                total_spent INTEGER DEFAULT 0
             )
         """)
 
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS pending_purchases (
+            CREATE TABLE IF NOT EXISTS purchases (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
-                amount REAL,
                 category TEXT,
-                photo_id TEXT
+                amount INTEGER,
+                receipt_file_id TEXT,
+                status TEXT DEFAULT 'pending'
             )
         """)
 
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS pending_redeems (
+            CREATE TABLE IF NOT EXISTS redemptions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
                 points INTEGER,
-                code TEXT
+                status TEXT DEFAULT 'pending'
             )
         """)
 
         await db.commit()
 
 
-async def get_user(user_id, username=None, first_name=None):
+async def ensure_user(update: Update):
+    user = update.effective_user
 
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT OR IGNORE INTO users
+            (user_id, username, first_name, points, total_spent)
+            VALUES (?, ?, ?, 0, 0)
+        """, (
+            user.id,
+            user.username,
+            user.first_name,
+        ))
 
-        cursor = await db.execute(
-            "SELECT * FROM users WHERE user_id = ?",
-            (user_id,)
-        )
+        await db.execute("""
+            UPDATE users
+            SET username = ?, first_name = ?
+            WHERE user_id = ?
+        """, (
+            user.username,
+            user.first_name,
+            user.id,
+        ))
 
-        row = await cursor.fetchone()
+        await db.commit()
 
-        if row is None:
 
-            await db.execute(
-                """
-                INSERT INTO users
-                (user_id, username, first_name, points, total_spent)
-                VALUES (?, ?, ?, 0, 0)
-                """,
-                (
-                    user_id,
-                    username,
-                    first_name
-                )
-            )
+async def get_user(user_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT user_id, username, first_name, points, total_spent
+            FROM users
+            WHERE user_id = ?
+        """, (user_id,))
 
-            await db.commit()
-
-            cursor = await db.execute(
-                "SELECT * FROM users WHERE user_id = ?",
-                (user_id,)
-            )
-
-            row = await cursor.fetchone()
-
-        return {
-            "user_id": row[0],
-            "username": row[1],
-            "first_name": row[2],
-            "points": row[3],
-            "total_spent": row[4],
-        }
+        return await cursor.fetchone()
 
 
 # ============================================================
-# БОНУСЫ
+# BONUS LOGIC
 # ============================================================
+
+def get_level(total_spent):
+
+    if total_spent <= 10000:
+        return "🥉 Уровень 1"
+
+    if total_spent <= 20000:
+        return "🥈 Уровень 2"
+
+    return "🥇 Уровень 3"
+
 
 def get_points(total_spent, amount, category):
 
@@ -185,56 +189,21 @@ def get_points(total_spent, amount, category):
 
         if total_spent <= 10000:
             rate = 0.03
-
         elif total_spent <= 20000:
             rate = 0.07
-
         else:
             rate = 0.10
 
-    elif category == "merch":
+    else:
 
         if total_spent <= 10000:
             rate = 0.05
-
         elif total_spent <= 20000:
             rate = 0.10
-
         else:
             rate = 0.15
 
-    else:
-        rate = 0
-
     return int(amount * rate)
-
-
-def get_level(total_spent):
-
-    if total_spent <= 10000:
-        return "🥉 Уровень 1"
-
-    elif total_spent <= 20000:
-        return "🥈 Уровень 2"
-
-    return "🥇 Уровень 3"
-
-
-def get_next_level_text(total_spent):
-
-    if total_spent <= 10000:
-
-        remaining = 10000 - total_spent
-
-        return f"До 🥈 Уровня 2: ещё {remaining:.0f} ₽"
-
-    elif total_spent <= 20000:
-
-        remaining = 20000 - total_spent
-
-        return f"До 🥇 Уровня 3: ещё {remaining:.0f} ₽"
-
-    return "🏆 Максимальный уровень"
 
 
 # ============================================================
@@ -243,81 +212,109 @@ def get_next_level_text(total_spent):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    user = update.effective_user
+    await ensure_user(update)
 
-    await get_user(
-        user.id,
-        user.username,
-        user.first_name
-    )
+    text = """
+🌙 <b>UTOPIA</b>
 
-    text = (
-        "🌙 <b>UTOPIA</b>\n"
-        "<i>Программа лояльности</i>\n\n"
+Добро пожаловать в клуб Утопии.
 
-        "Добро пожаловать в клуб Утопии.\n"
-        "Здесь хранятся твои покупки, баллы и скидки.\n\n"
+Здесь хранятся твои покупки,
+бонусные баллы и скидки.
 
-        "💳 <b>100 баллов = 100 ₽ скидки</b>\n\n"
+━━━━━━━━━━━━━━━━━━
 
-        "Выберите нужное действие ниже 👇"
-    )
+💳 <b>100 баллов = 100 ₽ скидки</b>
+
+━━━━━━━━━━━━━━━━━━
+
+Выбери действие ниже ↓
+"""
 
     await update.message.reply_text(
         text,
         parse_mode="HTML",
-        reply_markup=MAIN_MENU
+        reply_markup=MAIN_MENU,
     )
 
 
 # ============================================================
-# КАК ЭТО РАБОТАЕТ
+# HOW IT WORKS
 # ============================================================
 
 async def how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    text = (
-        "🌙 <b>Как работает программа</b>\n\n"
+    text = """
+🌙 <b>КАК РАБОТАЕТ ПРОГРАММА</b>
 
-        "За каждую подтверждённую покупку ты получаешь бонусные баллы.\n\n"
+За каждую подтверждённую покупку
+ты получаешь бонусные баллы.
 
-        "🥉 <b>Уровень 1</b>\n"
-        "До 10 000 ₽\n"
-        "• Обычная покупка — 3%\n"
-        "• Мерч Утопии — 5%\n\n"
+━━━━━━━━━━━━━━━━━━
 
-        "🥈 <b>Уровень 2</b>\n"
-        "От 10 001 до 20 000 ₽\n"
-        "• Обычная покупка — 7%\n"
-        "• Мерч Утопии — 10%\n\n"
+🥉 <b>УРОВЕНЬ 1</b>
 
-        "🥇 <b>Уровень 3</b>\n"
-        "Более 20 000 ₽\n"
-        "• Обычная покупка — 10%\n"
-        "• Мерч Утопии — 15%\n\n"
+До 10 000 ₽
 
-        "💳 <b>100 баллов = 100 ₽ скидки.</b>\n\n"
+• Обычная покупка — <b>3%</b>
+• Мерч Утопии — <b>5%</b>
 
-        "На данный момент баллами можно оплатить до 100% стоимости покупки. "
-        "В будущем это правило будет изменено.\n\n"
+━━━━━━━━━━━━━━━━━━
 
-        "Если возникли вопросы по работе бота, пишите админу "
-        "<b>@judaskai</b>\n"
-        "<i>Админ отвечает исключительно на вопросы, связанные с ботом. "
-        "Любые другие вопросы игнорируются 😽</i>\n\n"
+🥈 <b>УРОВЕНЬ 2</b>
 
-        "P.S. Подтверждение покупок и, соответственно, начисление баллов "
-        "происходит вручную, а не автоматически. Поэтому в некоторых "
-        "случаях это может занять время, но не более 12 часов.\n\n"
+От 10 001 до 20 000 ₽
 
-        "Чтобы получить баллы за покупку, нажми "
-        "«🛍 Отправить покупку» и отправь чек."
-    )
+• Обычная покупка — <b>7%</b>
+• Мерч Утопии — <b>10%</b>
+
+━━━━━━━━━━━━━━━━━━
+
+🥇 <b>УРОВЕНЬ 3</b>
+
+Более 20 000 ₽
+
+• Обычная покупка — <b>10%</b>
+• Мерч Утопии — <b>15%</b>
+
+━━━━━━━━━━━━━━━━━━
+
+💳 <b>100 баллов = 100 ₽ скидки.</b>
+
+На данный момент баллами можно оплатить
+до 100% стоимости покупки.
+
+В будущем это правило будет изменено.
+
+━━━━━━━━━━━━━━━━━━
+
+Если возникли вопросы по работе бота,
+пишите админу <b>@judaskai</b>
+
+<i>Админ отвечает исключительно на вопросы,
+связанные с ботом.
+Любые другие вопросы игнорируются 😽</i>
+
+━━━━━━━━━━━━━━━━━━
+
+<i>P.S. Подтверждение покупок и, соответственно,
+начисление баллов происходит вручную,
+а не автоматически.
+
+Поэтому в некоторых случаях это может занять
+время, но не более 12 часов.</i>
+
+━━━━━━━━━━━━━━━━━━
+
+Чтобы получить баллы за покупку,
+нажми «🛍 Отправить покупку»
+и отправь чек.
+"""
 
     await update.message.reply_text(
         text,
         parse_mode="HTML",
-        reply_markup=MAIN_MENU
+        reply_markup=MAIN_MENU,
     )
 
 
@@ -327,98 +324,150 @@ async def how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    user = update.effective_user
+    await ensure_user(update)
 
-    u = await get_user(
-        user.id,
-        user.username,
-        user.first_name
-    )
+    user = await get_user(update.effective_user.id)
 
-    level = get_level(u["total_spent"])
-    next_level = get_next_level_text(u["total_spent"])
+    if not user:
+        return
 
-    text = (
-        "🌙 <b>Мой баланс</b>\n\n"
-        f"💳 Баллы: <b>{u['points']}</b>\n"
-        f"💰 Всего покупок: <b>{u['total_spent']:.0f} ₽</b>\n"
-        f"🏆 {level}\n\n"
-        f"{next_level}\n\n"
-        "💡 100 баллов = 100 ₽ скидки"
-    )
+    _, username, first_name, points, total_spent = user
+
+    level = get_level(total_spent)
+
+    if total_spent <= 10000:
+        remaining = 10001 - total_spent
+        next_level = "до Уровня 2"
+    elif total_spent <= 20000:
+        remaining = 20001 - total_spent
+        next_level = "до Уровня 3"
+    else:
+        remaining = 0
+        next_level = None
+
+    if remaining > 0:
+        progress_text = (
+            f"До следующего уровня\n"
+            f"<b>{remaining:,} ₽</b>".replace(",", " ")
+        )
+    else:
+        progress_text = "✨ <b>Максимальный уровень достигнут</b>"
+
+    text = f"""
+🌙 <b>UTOPIA</b>
+
+💳 <b>ТВОЙ БАЛАНС</b>
+
+━━━━━━━━━━━━━━━━━━
+
+✨ <b>{points:,} баллов</b>
+   = {points:,} ₽ скидки
+
+🏆 {level}
+
+💰 Покупок на
+<b>{total_spent:,} ₽</b>
+
+━━━━━━━━━━━━━━━━━━
+
+{progress_text}
+
+━━━━━━━━━━━━━━━━━━
+
+Выбирай действие ниже ↓
+""".replace(",", " ")
 
     await update.message.reply_text(
         text,
         parse_mode="HTML",
-        reply_markup=MAIN_MENU
+        reply_markup=MAIN_MENU,
     )
 
 
 # ============================================================
-# PURCHASE START
+# PURCHASE
 # ============================================================
 
-async def purchase_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def purchase_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    await ensure_user(update)
 
     keyboard = [
         [
             InlineKeyboardButton(
-                CATEGORIES["regular"],
-                callback_data="category_regular"
+                "🛍 Обычная покупка",
+                callback_data="category_regular",
             )
         ],
         [
             InlineKeyboardButton(
-                CATEGORIES["merch"],
-                callback_data="category_merch"
+                "👕 Мерч Утопии",
+                callback_data="category_merch",
             )
         ],
     ]
 
+    text = """
+🌙 <b>НОВАЯ ПОКУПКА</b>
+
+━━━━━━━━━━━━━━━━━━
+
+Выбери тип покупки:
+
+🛍 <b>Обычная покупка</b>
+Покупки в магазине
+
+👕 <b>Мерч Утопии</b>
+Фирменный мерч
+
+━━━━━━━━━━━━━━━━━━
+"""
+
     await update.message.reply_text(
-        "🌙 <b>Отправить покупку</b>\n\n"
-        "Выбери категорию покупки:",
+        text,
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
-    return PURCHASE_CATEGORY
+    return CATEGORY
 
 
-# ============================================================
-# CATEGORY
-# ============================================================
-
-async def purchase_category(
+async def category_selected(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
     query = update.callback_query
-
     await query.answer()
 
-    category = query.data.replace(
-        "category_",
-        ""
-    )
+    category = query.data.replace("category_", "")
 
-    context.user_data["purchase_category"] = category
+    context.user_data["category"] = category
+
+    text = """
+🌙 <b>ЧЕК</b>
+
+━━━━━━━━━━━━━━━━━━
+
+Теперь отправь фотографию чека
+одним сообщением.
+
+<i>Фото должно быть читаемым,
+чтобы сумма и дата были видны.</i>
+"""
 
     await query.edit_message_text(
-        f"Выбрано: <b>{CATEGORIES[category]}</b>\n\n"
-        "Теперь отправь фотографию чека.",
-        parse_mode="HTML"
+        text,
+        parse_mode="HTML",
     )
 
-    return PURCHASE_PHOTO
+    return RECEIPT
 
 
-# ============================================================
-# PHOTO
-# ============================================================
-
-async def purchase_photo(
+async def receipt_received(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
@@ -426,38 +475,49 @@ async def purchase_photo(
     if not update.message.photo:
 
         await update.message.reply_text(
-            "📷 Пожалуйста, отправь именно фотографию чека."
+            """
+⚠️ <b>Нужна фотография чека</b>
+
+Отправь именно фото чека одним сообщением.
+""",
+            parse_mode="HTML",
         )
 
-        return PURCHASE_PHOTO
+        return RECEIPT
 
     photo = update.message.photo[-1]
 
-    context.user_data["purchase_photo"] = photo.file_id
+    context.user_data["receipt_file_id"] = photo.file_id
 
     await update.message.reply_text(
-        "💰 Теперь напиши сумму покупки в рублях.\n\n"
-        "Например: <b>2500</b>",
-        parse_mode="HTML"
+        """
+🌙 <b>СУММА ПОКУПКИ</b>
+
+━━━━━━━━━━━━━━━━━━
+
+Напиши сумму покупки в рублях.
+
+Например:
+
+<b>2500</b>
+""",
+        parse_mode="HTML",
     )
 
-    return PURCHASE_AMOUNT
+    return AMOUNT
 
 
-# ============================================================
-# AMOUNT
-# ============================================================
-
-async def purchase_amount(
+async def amount_received(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    text = update.message.text.strip().replace(",", ".")
-
     try:
-
-        amount = float(text)
+        amount = int(
+            update.message.text
+            .replace(" ", "")
+            .replace("₽", "")
+        )
 
         if amount <= 0:
             raise ValueError
@@ -465,77 +525,71 @@ async def purchase_amount(
     except ValueError:
 
         await update.message.reply_text(
-            "❌ Не удалось распознать сумму.\n"
-            "Напиши её числом, например: <b>2500</b>",
-            parse_mode="HTML"
+            """
+⚠️ <b>Не удалось определить сумму</b>
+
+Напиши сумму только числом.
+
+Например: <b>2500</b>
+""",
+            parse_mode="HTML",
         )
 
-        return PURCHASE_AMOUNT
+        return AMOUNT
 
-    user = update.effective_user
+    category = context.user_data.get("category")
+    receipt_file_id = context.user_data.get("receipt_file_id")
 
-    category = context.user_data.get(
-        "purchase_category"
-    )
-
-    photo_id = context.user_data.get(
-        "purchase_photo"
-    )
+    await ensure_user(update)
 
     async with aiosqlite.connect(DB_PATH) as db:
 
-        cursor = await db.execute(
-            """
-            INSERT INTO pending_purchases
-            (user_id, amount, category, photo_id)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                user.id,
-                amount,
-                category,
-                photo_id
-            )
-        )
+        cursor = await db.execute("""
+            INSERT INTO purchases
+            (user_id, category, amount, receipt_file_id, status)
+            VALUES (?, ?, ?, ?, 'pending')
+        """, (
+            update.effective_user.id,
+            category,
+            amount,
+            receipt_file_id,
+        ))
 
         purchase_id = cursor.lastrowid
 
         await db.commit()
 
-    await update.message.reply_text(
-        "🌙 Покупка отправлена на проверку.\n\n"
-        "Мы сообщим тебе результат после подтверждения.",
-        reply_markup=MAIN_MENU
-    )
+    # ADMIN NOTIFICATION
 
-    admin_keyboard = InlineKeyboardMarkup(
+    admin_text = f"""
+🌙 <b>НОВАЯ ПОКУПКА</b>
+
+━━━━━━━━━━━━━━━━━━
+
+👤 <b>{update.effective_user.first_name}</b>
+ID: <code>{update.effective_user.id}</code>
+
+🛒 {CATEGORIES.get(category, category)}
+
+💰 <b>{amount:,} ₽</b>
+
+━━━━━━━━━━━━━━━━━━
+
+Заявка № <b>{purchase_id}</b>
+""".replace(",", " ")
+
+    keyboard = InlineKeyboardMarkup([
         [
-            [
-                InlineKeyboardButton(
-                    "✅ Подтвердить",
-                    callback_data=f"approve_purchase_{purchase_id}"
-                ),
-                InlineKeyboardButton(
-                    "❌ Отклонить",
-                    callback_data=f"reject_purchase_{purchase_id}"
-                ),
-            ]
+            InlineKeyboardButton(
+                "✅ Подтвердить",
+                callback_data=f"approve_purchase_{purchase_id}",
+            ),
+            InlineKeyboardButton(
+                "❌ Отклонить",
+                callback_data=f"reject_purchase_{purchase_id}",
+            ),
         ]
-    )
-
-    username = (
-        f"@{user.username}"
-        if user.username
-        else user.first_name or "Без имени"
-    )
-
-    admin_text = (
-        "🛍 <b>Новая покупка</b>\n\n"
-        f"👤 Пользователь: {username}\n"
-        f"🆔 ID: <code>{user.id}</code>\n"
-        f"💰 Сумма: <b>{amount:.0f} ₽</b>\n"
-        f"📦 Категория: {CATEGORIES[category]}"
-    )
+    ])
 
     for admin_id in ADMIN_IDS:
 
@@ -543,18 +597,36 @@ async def purchase_amount(
 
             await context.bot.send_photo(
                 chat_id=admin_id,
-                photo=photo_id,
+                photo=receipt_file_id,
                 caption=admin_text,
                 parse_mode="HTML",
-                reply_markup=admin_keyboard
+                reply_markup=keyboard,
             )
 
-        except Exception as e:
+        except Exception:
+            pass
 
-            print(
-                "Admin notification error:",
-                e
-            )
+    await update.message.reply_text(
+        """
+🌙 <b>ПОКУПКА ОТПРАВЛЕНА</b>
+
+━━━━━━━━━━━━━━━━━━
+
+Чек передан на проверку.
+
+После подтверждения тебе автоматически
+начислятся бонусные баллы.
+
+⏳ Проверка может занять некоторое время,
+но не более 12 часов.
+
+━━━━━━━━━━━━━━━━━━
+
+Спасибо, что выбираешь <b>UTOPIA</b>.
+""",
+        parse_mode="HTML",
+        reply_markup=MAIN_MENU,
+    )
 
     context.user_data.clear()
 
@@ -562,10 +634,10 @@ async def purchase_amount(
 
 
 # ============================================================
-# PURCHASE CANCEL
+# CANCEL
 # ============================================================
 
-async def purchase_cancel(
+async def cancel(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
@@ -573,278 +645,385 @@ async def purchase_cancel(
     context.user_data.clear()
 
     await update.message.reply_text(
-        "🔄 <b>Сброс выполнен.</b>\n\n"
-        "Можно начать заново.",
+        """
+🌙 <b>ДЕЙСТВИЕ ОТМЕНЕНО</b>
+
+Возвращаемся в главное меню.
+""",
         parse_mode="HTML",
-        reply_markup=MAIN_MENU
+        reply_markup=MAIN_MENU,
     )
 
     return ConversationHandler.END
 
 
 # ============================================================
-# APPROVE / REJECT PURCHASE
+# PURCHASE APPROVE / REJECT
 # ============================================================
 
-async def purchase_callback(
+async def approve_purchase(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
     query = update.callback_query
-
     await query.answer()
 
-    data = query.data
+    purchase_id = int(
+        query.data.replace("approve_purchase_", "")
+    )
 
-    if data.startswith("approve_purchase_"):
+    async with aiosqlite.connect(DB_PATH) as db:
 
-        purchase_id = int(
-            data.replace(
-                "approve_purchase_",
-                ""
+        cursor = await db.execute("""
+            SELECT user_id, category, amount, status
+            FROM purchases
+            WHERE id = ?
+        """, (purchase_id,))
+
+        purchase = await cursor.fetchone()
+
+        if not purchase:
+            await query.edit_message_caption(
+                caption="⚠️ Заявка не найдена."
             )
+            return
+
+        user_id, category, amount, status = purchase
+
+        if status != "pending":
+
+            await query.answer(
+                "Эта заявка уже обработана.",
+                show_alert=True,
+            )
+
+            return
+
+        cursor = await db.execute("""
+            SELECT total_spent, points
+            FROM users
+            WHERE user_id = ?
+        """, (user_id,))
+
+        user = await cursor.fetchone()
+
+        if not user:
+            return
+
+        total_spent, current_points = user
+
+        new_total = total_spent + amount
+
+        earned_points = get_points(
+            new_total,
+            amount,
+            category,
         )
 
-        async with aiosqlite.connect(DB_PATH) as db:
+        new_points = current_points + earned_points
 
-            cursor = await db.execute(
-                """
-                SELECT user_id, amount, category, photo_id
-                FROM pending_purchases
-                WHERE id = ?
-                """,
-                (purchase_id,)
+        await db.execute("""
+            UPDATE users
+            SET total_spent = ?, points = ?
+            WHERE user_id = ?
+        """, (
+            new_total,
+            new_points,
+            user_id,
+        ))
+
+        await db.execute("""
+            UPDATE purchases
+            SET status = 'approved'
+            WHERE id = ?
+        """, (purchase_id,))
+
+        await db.commit()
+
+    # USER NOTIFICATION
+
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=f"""
+🌙 <b>UTOPIA</b>
+
+✅ <b>ПОКУПКА ПОДТВЕРЖДЕНА</b>
+
+━━━━━━━━━━━━━━━━━━
+
+💰 Сумма
+<b>{amount:,} ₽</b>
+
+✨ Начислено
+<b>{earned_points} баллов</b>
+
+━━━━━━━━━━━━━━━━━━
+
+Теперь на твоём балансе:
+
+💳 <b>{new_points} баллов</b>
+
+🏆 {get_level(new_total)}
+
+━━━━━━━━━━━━━━━━━━
+
+Спасибо, что выбираешь Утопию.
+""".replace(",", " "),
+        parse_mode="HTML",
+        reply_markup=MAIN_MENU,
+    )
+
+    await query.edit_message_caption(
+        caption=f"""
+🌙 <b>ПОКУПКА ПОДТВЕРЖДЕНА</b>
+
+━━━━━━━━━━━━━━━━━━
+
+💰 {amount:,} ₽
+✨ +{earned_points} баллов
+
+Заявка № {purchase_id}
+
+━━━━━━━━━━━━━━━━━━
+""".replace(",", " "),
+        parse_mode="HTML",
+    )
+
+
+async def reject_purchase(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+    await query.answer()
+
+    purchase_id = int(
+        query.data.replace("reject_purchase_", "")
+    )
+
+    async with aiosqlite.connect(DB_PATH) as db:
+
+        cursor = await db.execute("""
+            SELECT user_id, amount, status
+            FROM purchases
+            WHERE id = ?
+        """, (purchase_id,))
+
+        purchase = await cursor.fetchone()
+
+        if not purchase:
+            return
+
+        user_id, amount, status = purchase
+
+        if status != "pending":
+
+            await query.answer(
+                "Эта заявка уже обработана.",
+                show_alert=True,
             )
 
-            purchase = await cursor.fetchone()
+            return
 
-            if not purchase:
+        await db.execute("""
+            UPDATE purchases
+            SET status = 'rejected'
+            WHERE id = ?
+        """, (purchase_id,))
 
-                await query.edit_message_caption(
-                    caption="⚠️ Покупка уже обработана."
-                )
+        await db.commit()
 
-                return
+    await context.bot.send_message(
+        chat_id=user_id,
+        text="""
+🌙 <b>ПОКУПКА НЕ ПОДТВЕРЖДЕНА</b>
 
-            user_id, amount, category, photo_id = purchase
+━━━━━━━━━━━━━━━━━━
 
-            cursor = await db.execute(
-                """
-                SELECT points, total_spent
-                FROM users
-                WHERE user_id = ?
-                """,
-                (user_id,)
-            )
+К сожалению, этот чек не удалось
+подтвердить.
 
-            user = await cursor.fetchone()
+Если ты считаешь, что произошла ошибка,
+напиши админу:
 
-            if not user:
-                return
+<b>@judaskai</b>
 
-            current_points, total_spent = user
+━━━━━━━━━━━━━━━━━━
 
-            new_total = total_spent + amount
+Также можно обратиться через VK:
 
-            points = get_points(
-                new_total,
-                amount,
-                category
-            )
+https://vk.me/poputopia
+""",
+        parse_mode="HTML",
+        reply_markup=MAIN_MENU,
+    )
 
-            await db.execute(
-                """
-                UPDATE users
-                SET points = points + ?,
-                    total_spent = ?
-                WHERE user_id = ?
-                """,
-                (
-                    points,
-                    new_total,
-                    user_id
-                )
-            )
+    await query.edit_message_caption(
+        caption=f"""
+🌙 <b>ПОКУПКА ОТКЛОНЕНА</b>
 
-            await db.execute(
-                "DELETE FROM pending_purchases WHERE id = ?",
-                (purchase_id,)
-            )
+━━━━━━━━━━━━━━━━━━
 
-            await db.commit()
+Сумма: {amount:,} ₽
+Заявка № {purchase_id}
 
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=(
-                "✅ <b>Покупка подтверждена!</b>\n\n"
-                f"💰 Сумма: {amount:.0f} ₽\n"
-                f"✨ Начислено: <b>{points} баллов</b>\n\n"
-                "Баллы уже доступны на твоём балансе."
-            ),
-            parse_mode="HTML",
-            reply_markup=MAIN_MENU
-        )
-
-        await query.edit_message_caption(
-            caption=(
-                "✅ <b>Покупка подтверждена</b>\n\n"
-                f"💰 Сумма: {amount:.0f} ₽\n"
-                f"✨ Начислено: {points} баллов"
-            ),
-            parse_mode="HTML"
-        )
-
-    elif data.startswith("reject_purchase_"):
-
-        purchase_id = int(
-            data.replace(
-                "reject_purchase_",
-                ""
-            )
-        )
-
-        async with aiosqlite.connect(DB_PATH) as db:
-
-            cursor = await db.execute(
-                """
-                SELECT user_id, amount
-                FROM pending_purchases
-                WHERE id = ?
-                """,
-                (purchase_id,)
-            )
-
-            purchase = await cursor.fetchone()
-
-            if not purchase:
-
-                await query.edit_message_caption(
-                    caption="⚠️ Покупка уже обработана."
-                )
-
-                return
-
-            user_id, amount = purchase
-
-            await db.execute(
-                "DELETE FROM pending_purchases WHERE id = ?",
-                (purchase_id,)
-            )
-
-            await db.commit()
-
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=(
-                "❌ <b>Покупка отклонена.</b>\n\n"
-                "Если ты считаешь, что произошла ошибка, "
-                "свяжись с нами:\n"
-                "https://vk.me/poputopia"
-            ),
-            parse_mode="HTML",
-            reply_markup=MAIN_MENU
-        )
-
-        await query.edit_message_caption(
-            caption="❌ <b>Покупка отклонена</b>",
-            parse_mode="HTML"
-        )
+━━━━━━━━━━━━━━━━━━
+""".replace(",", " "),
+        parse_mode="HTML",
+    )
 
 
 # ============================================================
 # REDEEM
 # ============================================================
 
-async def redeem(
+async def redeem_start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    user = update.effective_user
+    await ensure_user(update)
 
-    u = await get_user(
-        user.id,
-        user.username,
-        user.first_name
-    )
+    user = await get_user(update.effective_user.id)
 
-    if u["points"] <= 0:
+    if not user:
+        return
+
+    _, _, _, points, _ = user
+
+    if points <= 0:
 
         await update.message.reply_text(
-            "🎁 <b>Потратить баллы</b>\n\n"
-            "У тебя пока нет доступных баллов.",
+            """
+🌙 <b>ТВОЙ БАЛАНС</b>
+
+━━━━━━━━━━━━━━━━━━
+
+✨ Сейчас у тебя <b>0 баллов</b>.
+
+Сначала накопи бонусы,
+совершая покупки в Утопии.
+
+━━━━━━━━━━━━━━━━━━
+""",
             parse_mode="HTML",
-            reply_markup=MAIN_MENU
+            reply_markup=MAIN_MENU,
         )
 
         return
 
-    code = (
-        f"@{user.username}"
-        if user.username
-        else f"id{user.id}"
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🎁 Потратить все баллы",
+                callback_data="redeem_confirm",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "✕ Отмена",
+                callback_data="redeem_cancel",
+            )
+        ],
+    ])
+
+    await update.message.reply_text(
+        f"""
+🌙 <b>ПОТРАТИТЬ БАЛЛЫ</b>
+
+━━━━━━━━━━━━━━━━━━
+
+💳 Доступно:
+
+<b>{points} баллов</b>
+= <b>{points} ₽ скидки</b>
+
+━━━━━━━━━━━━━━━━━━
+
+Сейчас можно использовать
+до 100% стоимости покупки.
+
+Хочешь потратить все баллы?
+
+""",
+        parse_mode="HTML",
+        reply_markup=keyboard,
     )
 
-    code = f"{code}_{u['points']}баллов"
+
+async def redeem_confirm(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    user = await get_user(user_id)
+
+    if not user:
+        return
+
+    points = user[3]
+
+    if points <= 0:
+
+        await query.edit_message_text(
+            "⚠️ На балансе нет доступных баллов."
+        )
+
+        return
 
     async with aiosqlite.connect(DB_PATH) as db:
 
-        cursor = await db.execute(
-            """
-            INSERT INTO pending_redeems
-            (user_id, points, code)
-            VALUES (?, ?, ?)
-            """,
-            (
-                user.id,
-                u["points"],
-                code
-            )
-        )
+        cursor = await db.execute("""
+            INSERT INTO redemptions
+            (user_id, points, status)
+            VALUES (?, ?, 'pending')
+        """, (
+            user_id,
+            points,
+        ))
 
-        redeem_id = cursor.lastrowid
+        redemption_id = cursor.lastrowid
 
         await db.commit()
 
-    await update.message.reply_text(
-        "🎁 <b>Запрос на списание создан.</b>\n\n"
-        f"Твои баллы: <b>{u['points']}</b>\n"
-        f"Скидка: <b>{u['points']} ₽</b>\n\n"
-        "Дождись подтверждения администратора.",
-        parse_mode="HTML",
-        reply_markup=MAIN_MENU
-    )
+    admin_text = f"""
+🌙 <b>НОВОЕ СПИСАНИЕ</b>
 
-    admin_keyboard = InlineKeyboardMarkup(
+━━━━━━━━━━━━━━━━━━
+
+👤 <b>{query.from_user.first_name}</b>
+ID: <code>{user_id}</code>
+
+🎁 Баллы:
+<b>{points}</b>
+
+💰 Скидка:
+<b>{points} ₽</b>
+
+━━━━━━━━━━━━━━━━━━
+
+Заявка № <b>{redemption_id}</b>
+"""
+
+    keyboard = InlineKeyboardMarkup([
         [
-            [
-                InlineKeyboardButton(
-                    "✅ Подтвердить",
-                    callback_data=f"approve_redeem_{redeem_id}"
-                ),
-                InlineKeyboardButton(
-                    "❌ Отклонить",
-                    callback_data=f"reject_redeem_{redeem_id}"
-                ),
-            ]
+            InlineKeyboardButton(
+                "✅ Подтвердить",
+                callback_data=f"approve_redeem_{redemption_id}",
+            ),
+            InlineKeyboardButton(
+                "❌ Отклонить",
+                callback_data=f"reject_redeem_{redemption_id}",
+            ),
         ]
-    )
-
-    username = (
-        f"@{user.username}"
-        if user.username
-        else user.first_name or "Без имени"
-    )
-
-    admin_text = (
-        "🎁 <b>Запрос на списание баллов</b>\n\n"
-        f"👤 Пользователь: {username}\n"
-        f"🆔 ID: <code>{user.id}</code>\n"
-        f"💳 Баллы: <b>{u['points']}</b>\n"
-        f"💰 Скидка: <b>{u['points']} ₽</b>\n\n"
-        f"Код: <code>{code}</code>"
-    )
+    ])
 
     for admin_id in ADMIN_IDS:
 
@@ -854,155 +1033,239 @@ async def redeem(
                 chat_id=admin_id,
                 text=admin_text,
                 parse_mode="HTML",
-                reply_markup=admin_keyboard
+                reply_markup=keyboard,
             )
 
-        except Exception as e:
+        except Exception:
+            pass
 
-            print(
-                "Admin redeem notification error:",
-                e
-            )
+    await query.edit_message_text(
+        f"""
+🌙 <b>ЗАПРОС ОТПРАВЛЕН</b>
+
+━━━━━━━━━━━━━━━━━━
+
+🎁 Запрошено:
+
+<b>{points} баллов</b>
+= <b>{points} ₽ скидки</b>
+
+━━━━━━━━━━━━━━━━━━
+
+Администратор должен подтвердить
+списание вручную.
+
+После подтверждения баллы
+будут списаны с баланса.
+
+⏳ Проверка может занять время,
+но не более 12 часов.
+""",
+        parse_mode="HTML",
+    )
 
 
-# ============================================================
-# APPROVE / REJECT REDEEM
-# ============================================================
-
-async def redeem_callback(
+async def redeem_cancel(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
     query = update.callback_query
-
     await query.answer()
 
-    data = query.data
+    await query.edit_message_text(
+        """
+🌙 <b>СПИСАНИЕ ОТМЕНЕНО</b>
 
-    if data.startswith("approve_redeem_"):
+Баллы остались на твоём балансе.
+""",
+        parse_mode="HTML",
+    )
 
-        redeem_id = int(
-            data.replace(
-                "approve_redeem_",
-                ""
-            )
-        )
 
-        async with aiosqlite.connect(DB_PATH) as db:
+async def approve_redeem(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
-            cursor = await db.execute(
-                """
-                SELECT user_id, points, code
-                FROM pending_redeems
-                WHERE id = ?
-                """,
-                (redeem_id,)
-            )
+    query = update.callback_query
+    await query.answer()
 
-            redeem_data = await cursor.fetchone()
+    redemption_id = int(
+        query.data.replace("approve_redeem_", "")
+    )
 
-            if not redeem_data:
+    async with aiosqlite.connect(DB_PATH) as db:
 
-                await query.edit_message_text(
-                    "⚠️ Запрос уже обработан."
-                )
+        cursor = await db.execute("""
+            SELECT user_id, points, status
+            FROM redemptions
+            WHERE id = ?
+        """, (redemption_id,))
 
-                return
+        redemption = await cursor.fetchone()
 
-            user_id, points, code = redeem_data
+        if not redemption:
+            return
 
-            await db.execute(
-                """
-                UPDATE users
-                SET points = 0
-                WHERE user_id = ?
-                """,
-                (user_id,)
-            )
+        user_id, points, status = redemption
 
-            await db.execute(
-                "DELETE FROM pending_redeems WHERE id = ?",
-                (redeem_id,)
-            )
+        if status != "pending":
+            return
 
-            await db.commit()
+        cursor = await db.execute("""
+            SELECT points
+            FROM users
+            WHERE user_id = ?
+        """, (user_id,))
 
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=(
-                "✅ <b>Списание подтверждено!</b>\n\n"
-                f"💳 Списано баллов: <b>{points}</b>\n"
-                f"💰 Скидка: <b>{points} ₽</b>\n\n"
-                "Спасибо, что выбираешь Утопию 🌙"
-            ),
-            parse_mode="HTML",
-            reply_markup=MAIN_MENU
-        )
+        user = await cursor.fetchone()
 
-        await query.edit_message_text(
-            "✅ <b>Списание подтверждено</b>\n\n"
-            f"Списано: {points} баллов",
-            parse_mode="HTML"
-        )
+        if not user:
+            return
 
-    elif data.startswith("reject_redeem_"):
+        current_points = user[0]
 
-        redeem_id = int(
-            data.replace(
-                "reject_redeem_",
-                ""
-            )
-        )
+        if current_points < points:
 
-        async with aiosqlite.connect(DB_PATH) as db:
-
-            cursor = await db.execute(
-                """
-                SELECT user_id, points
-                FROM pending_redeems
-                WHERE id = ?
-                """,
-                (redeem_id,)
+            await query.edit_message_text(
+                "⚠️ У пользователя недостаточно баллов."
             )
 
-            redeem_data = await cursor.fetchone()
+            return
 
-            if not redeem_data:
+        await db.execute("""
+            UPDATE users
+            SET points = points - ?
+            WHERE user_id = ?
+        """, (
+            points,
+            user_id,
+        ))
 
-                await query.edit_message_text(
-                    "⚠️ Запрос уже обработан."
-                )
+        await db.execute("""
+            UPDATE redemptions
+            SET status = 'approved'
+            WHERE id = ?
+        """, (redemption_id,))
 
-                return
+        await db.commit()
 
-            user_id, points = redeem_data
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=f"""
+🌙 <b>СПИСАНИЕ ПОДТВЕРЖДЕНО</b>
 
-            await db.execute(
-                "DELETE FROM pending_redeems WHERE id = ?",
-                (redeem_id,)
-            )
+━━━━━━━━━━━━━━━━━━
 
-            await db.commit()
+🎁 Списано:
 
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=(
-                "❌ <b>Запрос на списание отклонён.</b>\n\n"
-                f"Твои {points} баллов остались на балансе."
-            ),
-            parse_mode="HTML",
-            reply_markup=MAIN_MENU
-        )
+<b>{points} баллов</b>
+= <b>{points} ₽ скидки</b>
 
-        await query.edit_message_text(
-            "❌ <b>Списание отклонено</b>",
-            parse_mode="HTML"
-        )
+━━━━━━━━━━━━━━━━━━
+
+Баллы можно использовать
+при следующей покупке.
+
+Спасибо, что выбираешь Утопию.
+""",
+        parse_mode="HTML",
+        reply_markup=MAIN_MENU,
+    )
+
+    await query.edit_message_text(
+        f"""
+🌙 <b>СПИСАНИЕ ПОДТВЕРЖДЕНО</b>
+
+━━━━━━━━━━━━━━━━━━
+
+🎁 {points} баллов
+💰 {points} ₽
+
+Заявка № {redemption_id}
+
+━━━━━━━━━━━━━━━━━━
+"""
+    )
+
+
+async def reject_redeem(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+    await query.answer()
+
+    redemption_id = int(
+        query.data.replace("reject_redeem_", "")
+    )
+
+    async with aiosqlite.connect(DB_PATH) as db:
+
+        cursor = await db.execute("""
+            SELECT user_id, points, status
+            FROM redemptions
+            WHERE id = ?
+        """, (redemption_id,))
+
+        redemption = await cursor.fetchone()
+
+        if not redemption:
+            return
+
+        user_id, points, status = redemption
+
+        if status != "pending":
+            return
+
+        await db.execute("""
+            UPDATE redemptions
+            SET status = 'rejected'
+            WHERE id = ?
+        """, (redemption_id,))
+
+        await db.commit()
+
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=f"""
+🌙 <b>СПИСАНИЕ НЕ ПОДТВЕРЖДЕНО</b>
+
+━━━━━━━━━━━━━━━━━━
+
+Запрос на списание
+<b>{points} баллов</b> был отклонён.
+
+Баллы остаются на твоём балансе.
+
+Если ты считаешь, что произошла ошибка,
+напиши админу:
+
+<b>@judaskai</b>
+""",
+        parse_mode="HTML",
+        reply_markup=MAIN_MENU,
+    )
+
+    await query.edit_message_text(
+        f"""
+🌙 <b>СПИСАНИЕ ОТКЛОНЕНО</b>
+
+━━━━━━━━━━━━━━━━━━
+
+{points} баллов возвращены пользователю.
+
+Заявка № {redemption_id}
+
+━━━━━━━━━━━━━━━━━━
+"""
+    )
 
 
 # ============================================================
-# ADMIN CLIENTS
+# ADMIN — CLIENTS
 # ============================================================
 
 async def clients(
@@ -1015,13 +1278,11 @@ async def clients(
 
     async with aiosqlite.connect(DB_PATH) as db:
 
-        cursor = await db.execute(
-            """
-            SELECT user_id, username, first_name, points, total_spent
+        cursor = await db.execute("""
+            SELECT first_name, username, points, total_spent
             FROM users
             ORDER BY total_spent DESC
-            """
-        )
+        """)
 
         users = await cursor.fetchall()
 
@@ -1034,29 +1295,30 @@ async def clients(
         return
 
     lines = [
-        "👥 <b>Клиенты</b>\n"
+        "🌙 <b>КЛИЕНТЫ UTOPIA</b>",
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
     ]
 
-    for i, user in enumerate(users, 1):
+    for index, user in enumerate(users, 1):
 
-        user_id, username, first_name, points, total_spent = user
+        first_name, username, points, total_spent = user
 
-        name = (
-            f"@{username}"
-            if username
-            else first_name or "Без имени"
-        )
+        name = first_name or "Без имени"
+
+        if username:
+            name += f" @{username}"
 
         lines.append(
-            f"{i}. {name}\n"
-            f"   💰 {total_spent:.0f} ₽ | "
-            f"💳 {points} баллов\n"
-            f"   ID: <code>{user_id}</code>"
+            f"<b>{index}.</b> {name}\n"
+            f"💰 {total_spent:,} ₽ · ✨ {points} баллов"
+            .replace(",", " ")
         )
 
     await update.message.reply_text(
-        "\n\n".join(lines),
-        parse_mode="HTML"
+        "\n".join(lines),
+        parse_mode="HTML",
     )
 
 
@@ -1064,7 +1326,7 @@ async def clients(
 # ADMIN HELP
 # ============================================================
 
-async def admin(
+async def admin_help(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
@@ -1072,15 +1334,29 @@ async def admin(
     if update.effective_user.id not in ADMIN_IDS:
         return
 
-    text = (
-        "🌙 <b>UTOPIA — Админ</b>\n\n"
-        "/clients — список клиентов\n"
-        "/admin — эта справка"
-    )
-
     await update.message.reply_text(
-        text,
-        parse_mode="HTML"
+        """
+🌙 <b>UTOPIA ADMIN</b>
+
+━━━━━━━━━━━━━━━━━━
+
+<b>Команды:</b>
+
+/clients
+Список клиентов
+
+/admin
+Эта справка
+
+━━━━━━━━━━━━━━━━━━
+
+Все покупки и списания
+приходят автоматически.
+
+Администратор подтверждает
+их кнопками под заявкой.
+""",
+        parse_mode="HTML",
     )
 
 
@@ -1090,15 +1366,13 @@ async def admin(
 
 async def post_init(application: Application):
 
-    await application.bot.set_my_commands(
-        [
-            ("start", "Начать"),
-            ("purchase", "Отправить покупку"),
-            ("balance", "Мой баланс"),
-            ("redeem", "Потратить баллы"),
-            ("cancel", "Сбросить"),
-        ]
-    )
+    await application.bot.set_my_commands([
+        BotCommand("start", "Начать"),
+        BotCommand("purchase", "Отправить покупку"),
+        BotCommand("balance", "Мой баланс"),
+        BotCommand("redeem", "Потратить баллы"),
+        BotCommand("cancel", "Сбросить"),
+    ])
 
 
 # ============================================================
@@ -1107,77 +1381,12 @@ async def post_init(application: Application):
 
 def main():
 
-    if not BOT_TOKEN:
-
-        raise RuntimeError(
-            "BOT_TOKEN is not set"
-        )
+    threading.Thread(
+        target=run_health_server,
+        daemon=True,
+    ).start()
 
     asyncio.run(init_db())
-
-    health_thread = threading.Thread(
-        target=run_health_server,
-        daemon=True
-    )
-
-    health_thread.start()
-
-    purchase_conversation = ConversationHandler(
-
-        entry_points=[
-            CommandHandler(
-                "purchase",
-                purchase_start
-            ),
-
-            MessageHandler(
-                filters.Regex(
-                    r"^🛍 Отправить покупку$"
-                ),
-                purchase_start
-            ),
-        ],
-
-        states={
-
-            PURCHASE_CATEGORY: [
-                CallbackQueryHandler(
-                    purchase_category,
-                    pattern=r"^category_"
-                )
-            ],
-
-            PURCHASE_PHOTO: [
-                MessageHandler(
-                    filters.PHOTO,
-                    purchase_photo
-                )
-            ],
-
-            PURCHASE_AMOUNT: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    purchase_amount
-                )
-            ],
-        },
-
-        fallbacks=[
-            CommandHandler(
-                "cancel",
-                purchase_cancel
-            ),
-
-            MessageHandler(
-                filters.Regex(
-                    r"^🔄 Сбросить$"
-                ),
-                purchase_cancel
-            ),
-        ],
-
-        allow_reentry=True,
-    )
 
     application = (
         Application.builder()
@@ -1186,126 +1395,181 @@ def main():
         .build()
     )
 
-    # ========================================================
-    # КОМАНДЫ
-    # ========================================================
+    # --------------------------------------------------------
+    # BASIC COMMANDS
+    # --------------------------------------------------------
 
     application.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
+        CommandHandler("start", start)
     )
 
     application.add_handler(
-        CommandHandler(
-            "balance",
-            balance
-        )
+        CommandHandler("balance", balance)
     )
 
     application.add_handler(
-        CommandHandler(
-            "redeem",
-            redeem
-        )
+        CommandHandler("purchase", purchase_start)
     )
 
     application.add_handler(
-        CommandHandler(
-            "cancel",
-            purchase_cancel
-        )
+        CommandHandler("redeem", redeem_start)
     )
 
     application.add_handler(
-        CommandHandler(
-            "clients",
-            clients
-        )
+        CommandHandler("cancel", cancel)
     )
 
     application.add_handler(
-        CommandHandler(
-            "admin",
-            admin
-        )
+        CommandHandler("clients", clients)
     )
 
-    # ========================================================
-    # ПОКУПКА
-    # ========================================================
+    application.add_handler(
+        CommandHandler("admin", admin_help)
+    )
+
+    # --------------------------------------------------------
+    # PURCHASE CONVERSATION
+    # --------------------------------------------------------
+
+    purchase_conversation = ConversationHandler(
+        entry_points=[
+            MessageHandler(
+                filters.Regex("^🛍 Отправить покупку$"),
+                purchase_start,
+            ),
+            CommandHandler("purchase", purchase_start),
+        ],
+
+        states={
+
+            CATEGORY: [
+                CallbackQueryHandler(
+                    category_selected,
+                    pattern="^category_",
+                )
+            ],
+
+            RECEIPT: [
+                MessageHandler(
+                    filters.PHOTO,
+                    receipt_received,
+                )
+            ],
+
+            AMOUNT: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    amount_received,
+                )
+            ],
+        },
+
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            MessageHandler(
+                filters.Regex("^🔄 Сбросить$"),
+                cancel,
+            ),
+        ],
+
+        allow_reentry=True,
+    )
 
     application.add_handler(
         purchase_conversation
     )
 
-    # ========================================================
-    # КНОПКИ ГЛАВНОГО МЕНЮ
-    # ========================================================
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex(
-                r"^💳 Мой баланс$"
-            ),
-            balance
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex(
-                r"^🎁 Потратить баллы$"
-            ),
-            redeem
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex(
-                r"^ℹ️ Как это работает$"
-            ),
-            how_it_works
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex(
-                r"^🔄 Сбросить$"
-            ),
-            purchase_cancel
-        )
-    )
-
-    # ========================================================
-    # АДМИНСКИЕ КНОПКИ
-    # ========================================================
+    # --------------------------------------------------------
+    # PURCHASE ADMIN CALLBACKS
+    # --------------------------------------------------------
 
     application.add_handler(
         CallbackQueryHandler(
-            purchase_callback,
-            pattern=r"^(approve|reject)_purchase_"
+            approve_purchase,
+            pattern="^approve_purchase_",
         )
     )
 
     application.add_handler(
         CallbackQueryHandler(
-            redeem_callback,
-            pattern=r"^(approve|reject)_redeem_"
+            reject_purchase,
+            pattern="^reject_purchase_",
         )
     )
 
-    print("🌙 UTOPIA bot started")
+    # --------------------------------------------------------
+    # REDEEM
+    # --------------------------------------------------------
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("^🎁 Потратить баллы$"),
+            redeem_start,
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            redeem_confirm,
+            pattern="^redeem_confirm$",
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            redeem_cancel,
+            pattern="^redeem_cancel$",
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            approve_redeem,
+            pattern="^approve_redeem_",
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            reject_redeem,
+            pattern="^reject_redeem_",
+        )
+    )
+
+    # --------------------------------------------------------
+    # OTHER BUTTONS
+    # --------------------------------------------------------
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("^💳 Мой баланс$"),
+            balance,
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("^ℹ️ Как это работает$"),
+            how_it_works,
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("^🔄 Сбросить$"),
+            cancel,
+        )
+    )
+
+    # --------------------------------------------------------
+    # START BOT
+    # --------------------------------------------------------
+
+    print("UTOPIA loyalty bot started")
 
     application.run_polling()
 
 
-# ============================================================
-# ЗАПУСК
-# ============================================================
-
 if __name__ == "__main__":
     main()
+```
