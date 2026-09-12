@@ -1,2 +1,2 @@
-aiogram
+python-telegram-bot>=21,<23
 aiosqlite
