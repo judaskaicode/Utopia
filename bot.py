@@ -9,6 +9,7 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
 )
 
 from telegram.ext import (
@@ -45,6 +46,20 @@ CATEGORIES = {
     "regular": "🛍 Обычная покупка",
     "merch": "👕 Мерч Утопии",
 }
+
+
+# =========================================================
+# ГЛАВНОЕ МЕНЮ
+# =========================================================
+
+MAIN_MENU = ReplyKeyboardMarkup(
+    [
+        ["🛍 Отправить покупку"],
+        ["💳 Мой баланс", "🎁 Потратить баллы"],
+        ["🔄 Сбросить"],
+    ],
+    resize_keyboard=True
+)
 
 
 # =========================================================
@@ -89,48 +104,24 @@ def get_points(
     if category == "merch":
 
         if total_spent <= 10000:
-
-            return round(
-                purchase_amount * 0.05,
-                2
-            )
+            return round(purchase_amount * 0.05, 2)
 
         elif total_spent <= 20000:
-
-            return round(
-                purchase_amount * 0.10,
-                2
-            )
+            return round(purchase_amount * 0.10, 2)
 
         else:
-
-            return round(
-                purchase_amount * 0.15,
-                2
-            )
+            return round(purchase_amount * 0.15, 2)
 
     else:
 
         if total_spent <= 10000:
-
-            return round(
-                purchase_amount * 0.03,
-                2
-            )
+            return round(purchase_amount * 0.03, 2)
 
         elif total_spent <= 20000:
-
-            return round(
-                purchase_amount * 0.07,
-                2
-            )
+            return round(purchase_amount * 0.07, 2)
 
         else:
-
-            return round(
-                purchase_amount * 0.10,
-                2
-            )
+            return round(purchase_amount * 0.10, 2)
 
 
 def get_level_name(
@@ -138,15 +129,12 @@ def get_level_name(
 ) -> str:
 
     if total_spent <= 10000:
-
         return "🥉 Уровень 1"
 
     elif total_spent <= 20000:
-
         return "🥈 Уровень 2"
 
     else:
-
         return "🥇 Уровень 3"
 
 
@@ -243,7 +231,6 @@ async def get_user(
         row = await cursor.fetchone()
 
         if row:
-
             return dict(row)
 
         return {
@@ -512,15 +499,13 @@ async def start(
 
         "💳 *100 баллов = 100₽ скидки*\n\n"
 
-        "Команды:\n"
-        "/purchase — отправить покупку\n"
-        "/balance — мой баланс\n"
-        "/redeem — обменять баллы на скидку"
+        "Выберите нужное действие ниже 👇"
     )
 
     await update.message.reply_text(
         text,
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=MAIN_MENU
     )
 
 
@@ -551,7 +536,8 @@ async def balance(
 
     await update.message.reply_text(
         text,
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=MAIN_MENU
     )
 
 
@@ -767,7 +753,8 @@ async def purchase_amount(
         f"*{amount:.2f}₽* "
         "отправлена на проверку.\n"
         "Ожидайте подтверждения! 🕐",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=MAIN_MENU
     )
 
     context.user_data.clear()
@@ -776,7 +763,7 @@ async def purchase_amount(
 
 
 # =========================================================
-# ОТМЕНА
+# /cancel
 # =========================================================
 
 async def purchase_cancel(
@@ -787,7 +774,9 @@ async def purchase_cancel(
     context.user_data.clear()
 
     await update.message.reply_text(
-        "❌ Отменено."
+        "❌ Текущая операция сброшена.\n\n"
+        "Можно начать заново.",
+        reply_markup=MAIN_MENU
     )
 
     return ConversationHandler.END
@@ -940,7 +929,7 @@ async def admin_callback(
 
 
 # =========================================================
-# REDEEM
+# /redeem
 # =========================================================
 
 async def redeem(
@@ -956,7 +945,8 @@ async def redeem(
 
         await update.message.reply_text(
             "😔 У вас недостаточно баллов "
-            "для обмена."
+            "для обмена.",
+            reply_markup=MAIN_MENU
         )
 
         return
@@ -982,7 +972,8 @@ async def redeem(
         "https://vk.me/poputopia\n\n"
         "_После проверки скидка будет "
         "подтверждена._",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=MAIN_MENU
     )
 
     await save_redeem(
@@ -1235,6 +1226,73 @@ async def admin_help(
 
 
 # =========================================================
+# КНОПКИ ГЛАВНОГО МЕНЮ
+# =========================================================
+
+async def menu_purchase(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    return await purchase_start(
+        update,
+        context
+    )
+
+
+async def menu_balance(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    await balance(
+        update,
+        context
+    )
+
+
+async def menu_redeem(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    await redeem(
+        update,
+        context
+    )
+
+
+async def menu_cancel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    return await purchase_cancel(
+        update,
+        context
+    )
+
+
+# =========================================================
+# УСТАНОВКА КОМАНД TELEGRAM
+# =========================================================
+
+async def post_init(
+    application: Application
+):
+
+    await application.bot.set_my_commands(
+        [
+            ("start", "Начать"),
+            ("purchase", "Отправить покупку"),
+            ("balance", "Мой баланс"),
+            ("redeem", "Потратить баллы"),
+            ("cancel", "Сбросить"),
+        ]
+    )
+
+
+# =========================================================
 # ЗАПУСК
 # =========================================================
 
@@ -1260,8 +1318,13 @@ def main():
         Application
         .builder()
         .token(BOT_TOKEN)
+        .post_init(post_init)
         .build()
     )
+
+    # =====================================================
+    # ПОКУПКА
+    # =====================================================
 
     conversation_handler = ConversationHandler(
 
@@ -1269,7 +1332,13 @@ def main():
             CommandHandler(
                 "purchase",
                 purchase_start
-            )
+            ),
+            MessageHandler(
+                filters.Regex(
+                    r"^🛍 Отправить покупку$"
+                ),
+                purchase_start
+            ),
         ],
 
         states={
@@ -1300,9 +1369,19 @@ def main():
             CommandHandler(
                 "cancel",
                 purchase_cancel
-            )
+            ),
+            MessageHandler(
+                filters.Regex(
+                    r"^🔄 Сбросить$"
+                ),
+                purchase_cancel
+            ),
         ],
     )
+
+    # =====================================================
+    # ОСНОВНЫЕ КОМАНДЫ
+    # =====================================================
 
     application.add_handler(
         CommandHandler(
@@ -1325,6 +1404,52 @@ def main():
         )
     )
 
+    # =====================================================
+    # КНОПКИ МЕНЮ
+    # =====================================================
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex(
+                r"^💳 Мой баланс$"
+            ),
+            menu_balance
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex(
+                r"^🎁 Потратить баллы$"
+            ),
+            menu_redeem
+        )
+    )
+
+    # =====================================================
+    # ОТМЕНА
+    # =====================================================
+
+    application.add_handler(
+        CommandHandler(
+            "cancel",
+            purchase_cancel
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Regex(
+                r"^🔄 Сбросить$"
+            ),
+            menu_cancel
+        )
+    )
+
+    # =====================================================
+    # АДМИН
+    # =====================================================
+
     application.add_handler(
         CommandHandler(
             "clients",
@@ -1339,9 +1464,17 @@ def main():
         )
     )
 
+    # =====================================================
+    # CONVERSATION
+    # =====================================================
+
     application.add_handler(
         conversation_handler
     )
+
+    # =====================================================
+    # CALLBACKS
+    # =====================================================
 
     application.add_handler(
         CallbackQueryHandler(
