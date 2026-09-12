@@ -59,7 +59,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
         ["ℹ️ Как это работает"],
         ["🔄 Сбросить"],
     ],
-    resize_keyboard=True,
+    resize_keyboard=True
 )
 
 
@@ -75,6 +75,7 @@ PURCHASE_CATEGORY, PURCHASE_PHOTO, PURCHASE_AMOUNT = range(3)
 # ============================================================
 
 class HealthHandler(BaseHTTPRequestHandler):
+
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
@@ -95,6 +96,7 @@ def run_health_server():
 # ============================================================
 
 async def init_db():
+
     async with aiosqlite.connect(DB_PATH) as db:
 
         await db.execute("""
@@ -130,6 +132,7 @@ async def init_db():
 
 
 async def get_user(user_id, username=None, first_name=None):
+
     async with aiosqlite.connect(DB_PATH) as db:
 
         cursor = await db.execute(
@@ -140,14 +143,20 @@ async def get_user(user_id, username=None, first_name=None):
         row = await cursor.fetchone()
 
         if row is None:
+
             await db.execute(
                 """
                 INSERT INTO users
                 (user_id, username, first_name, points, total_spent)
                 VALUES (?, ?, ?, 0, 0)
                 """,
-                (user_id, username, first_name)
+                (
+                    user_id,
+                    username,
+                    first_name
+                )
             )
+
             await db.commit()
 
             cursor = await db.execute(
@@ -171,19 +180,26 @@ async def get_user(user_id, username=None, first_name=None):
 # ============================================================
 
 def get_points(total_spent, amount, category):
+
     if category == "regular":
+
         if total_spent <= 10000:
             rate = 0.03
+
         elif total_spent <= 20000:
             rate = 0.07
+
         else:
             rate = 0.10
 
     elif category == "merch":
+
         if total_spent <= 10000:
             rate = 0.05
+
         elif total_spent <= 20000:
             rate = 0.10
+
         else:
             rate = 0.15
 
@@ -194,6 +210,7 @@ def get_points(total_spent, amount, category):
 
 
 def get_level(total_spent):
+
     if total_spent <= 10000:
         return "🥉 Уровень 1"
 
@@ -204,12 +221,17 @@ def get_level(total_spent):
 
 
 def get_next_level_text(total_spent):
+
     if total_spent <= 10000:
+
         remaining = 10000 - total_spent
+
         return f"До 🥈 Уровня 2: ещё {remaining:.0f} ₽"
 
     elif total_spent <= 20000:
+
         remaining = 20000 - total_spent
+
         return f"До 🥇 Уровня 3: ещё {remaining:.0f} ₽"
 
     return "🏆 Максимальный уровень"
@@ -260,7 +282,7 @@ async def how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "За каждую подтверждённую покупку ты получаешь бонусные баллы.\n\n"
 
         "🥉 <b>Уровень 1</b>\n"
-        "До 10 000 ₽ покупок\n"
+        "До 10 000 ₽\n"
         "• Обычная покупка — 3%\n"
         "• Мерч Утопии — 5%\n\n"
 
@@ -274,10 +296,22 @@ async def how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Обычная покупка — 10%\n"
         "• Мерч Утопии — 15%\n\n"
 
-        "💳 <b>100 баллов = 100 ₽ скидки</b>\n\n"
+        "💳 <b>100 баллов = 100 ₽ скидки.</b>\n\n"
 
-        "Чтобы получить баллы за покупку, "
-        "нажми «🛍 Отправить покупку» и отправь чек."
+        "На данный момент баллами можно оплатить до 100% стоимости покупки. "
+        "В будущем это правило будет изменено.\n\n"
+
+        "Если возникли вопросы по работе бота, пишите админу "
+        "<b>@judaskai</b>\n"
+        "<i>Админ отвечает исключительно на вопросы, связанные с ботом. "
+        "Любые другие вопросы игнорируются 😽</i>\n\n"
+
+        "P.S. Подтверждение покупок и, соответственно, начисление баллов "
+        "происходит вручную, а не автоматически. Поэтому в некоторых "
+        "случаях это может занять время, но не более 12 часов.\n\n"
+
+        "Чтобы получить баллы за покупку, нажми "
+        "«🛍 Отправить покупку» и отправь чек."
     )
 
     await update.message.reply_text(
@@ -361,9 +395,13 @@ async def purchase_category(
 ):
 
     query = update.callback_query
+
     await query.answer()
 
-    category = query.data.replace("category_", "")
+    category = query.data.replace(
+        "category_",
+        ""
+    )
 
     context.user_data["purchase_category"] = category
 
@@ -418,6 +456,7 @@ async def purchase_amount(
     text = update.message.text.strip().replace(",", ".")
 
     try:
+
         amount = float(text)
 
         if amount <= 0:
@@ -435,8 +474,13 @@ async def purchase_amount(
 
     user = update.effective_user
 
-    category = context.user_data.get("purchase_category")
-    photo_id = context.user_data.get("purchase_photo")
+    category = context.user_data.get(
+        "purchase_category"
+    )
+
+    photo_id = context.user_data.get(
+        "purchase_photo"
+    )
 
     async with aiosqlite.connect(DB_PATH) as db:
 
@@ -463,8 +507,6 @@ async def purchase_amount(
         "Мы сообщим тебе результат после подтверждения.",
         reply_markup=MAIN_MENU
     )
-
-    # Сообщение администраторам
 
     admin_keyboard = InlineKeyboardMarkup(
         [
@@ -508,7 +550,11 @@ async def purchase_amount(
             )
 
         except Exception as e:
-            print("Admin notification error:", e)
+
+            print(
+                "Admin notification error:",
+                e
+            )
 
     context.user_data.clear()
 
@@ -546,6 +592,7 @@ async def purchase_callback(
 ):
 
     query = update.callback_query
+
     await query.answer()
 
     data = query.data
@@ -553,7 +600,10 @@ async def purchase_callback(
     if data.startswith("approve_purchase_"):
 
         purchase_id = int(
-            data.replace("approve_purchase_", "")
+            data.replace(
+                "approve_purchase_",
+                ""
+            )
         )
 
         async with aiosqlite.connect(DB_PATH) as db:
@@ -648,7 +698,10 @@ async def purchase_callback(
     elif data.startswith("reject_purchase_"):
 
         purchase_id = int(
-            data.replace("reject_purchase_", "")
+            data.replace(
+                "reject_purchase_",
+                ""
+            )
         )
 
         async with aiosqlite.connect(DB_PATH) as db:
@@ -703,7 +756,10 @@ async def purchase_callback(
 # REDEEM
 # ============================================================
 
-async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def redeem(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     user = update.effective_user
 
@@ -802,7 +858,11 @@ async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         except Exception as e:
-            print("Admin redeem notification error:", e)
+
+            print(
+                "Admin redeem notification error:",
+                e
+            )
 
 
 # ============================================================
@@ -815,6 +875,7 @@ async def redeem_callback(
 ):
 
     query = update.callback_query
+
     await query.answer()
 
     data = query.data
@@ -822,7 +883,10 @@ async def redeem_callback(
     if data.startswith("approve_redeem_"):
 
         redeem_id = int(
-            data.replace("approve_redeem_", "")
+            data.replace(
+                "approve_redeem_",
+                ""
+            )
         )
 
         async with aiosqlite.connect(DB_PATH) as db:
@@ -885,7 +949,10 @@ async def redeem_callback(
     elif data.startswith("reject_redeem_"):
 
         redeem_id = int(
-            data.replace("reject_redeem_", "")
+            data.replace(
+                "reject_redeem_",
+                ""
+            )
         )
 
         async with aiosqlite.connect(DB_PATH) as db:
@@ -938,7 +1005,10 @@ async def redeem_callback(
 # ADMIN CLIENTS
 # ============================================================
 
-async def clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def clients(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if update.effective_user.id not in ADMIN_IDS:
         return
@@ -963,7 +1033,9 @@ async def clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    lines = ["👥 <b>Клиенты</b>\n"]
+    lines = [
+        "👥 <b>Клиенты</b>\n"
+    ]
 
     for i, user in enumerate(users, 1):
 
@@ -992,7 +1064,10 @@ async def clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ADMIN HELP
 # ============================================================
 
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if update.effective_user.id not in ADMIN_IDS:
         return
@@ -1033,6 +1108,7 @@ async def post_init(application: Application):
 def main():
 
     if not BOT_TOKEN:
+
         raise RuntimeError(
             "BOT_TOKEN is not set"
         )
@@ -1047,8 +1123,13 @@ def main():
     health_thread.start()
 
     purchase_conversation = ConversationHandler(
+
         entry_points=[
-            CommandHandler("purchase", purchase_start),
+            CommandHandler(
+                "purchase",
+                purchase_start
+            ),
+
             MessageHandler(
                 filters.Regex(
                     r"^🛍 Отправить покупку$"
@@ -1086,6 +1167,7 @@ def main():
                 "cancel",
                 purchase_cancel
             ),
+
             MessageHandler(
                 filters.Regex(
                     r"^🔄 Сбросить$"
@@ -1104,66 +1186,104 @@ def main():
         .build()
     )
 
-    # Команды
+    # ========================================================
+    # КОМАНДЫ
+    # ========================================================
+
     application.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start
+        )
     )
 
     application.add_handler(
-        CommandHandler("balance", balance)
+        CommandHandler(
+            "balance",
+            balance
+        )
     )
 
     application.add_handler(
-        CommandHandler("redeem", redeem)
+        CommandHandler(
+            "redeem",
+            redeem
+        )
     )
 
     application.add_handler(
-        CommandHandler("cancel", purchase_cancel)
+        CommandHandler(
+            "cancel",
+            purchase_cancel
+        )
     )
 
     application.add_handler(
-        CommandHandler("clients", clients)
+        CommandHandler(
+            "clients",
+            clients
+        )
     )
 
     application.add_handler(
-        CommandHandler("admin", admin)
+        CommandHandler(
+            "admin",
+            admin
+        )
     )
 
-    # Покупка
+    # ========================================================
+    # ПОКУПКА
+    # ========================================================
+
     application.add_handler(
         purchase_conversation
     )
 
-    # Кнопки главного меню
+    # ========================================================
+    # КНОПКИ ГЛАВНОГО МЕНЮ
+    # ========================================================
+
     application.add_handler(
         MessageHandler(
-            filters.Regex(r"^💳 Мой баланс$"),
+            filters.Regex(
+                r"^💳 Мой баланс$"
+            ),
             balance
         )
     )
 
     application.add_handler(
         MessageHandler(
-            filters.Regex(r"^🎁 Потратить баллы$"),
+            filters.Regex(
+                r"^🎁 Потратить баллы$"
+            ),
             redeem
         )
     )
 
     application.add_handler(
         MessageHandler(
-            filters.Regex(r"^ℹ️ Как это работает$"),
+            filters.Regex(
+                r"^ℹ️ Как это работает$"
+            ),
             how_it_works
         )
     )
 
     application.add_handler(
         MessageHandler(
-            filters.Regex(r"^🔄 Сбросить$"),
+            filters.Regex(
+                r"^🔄 Сбросить$"
+            ),
             purchase_cancel
         )
     )
 
-    # Админские кнопки
+    # ========================================================
+    # АДМИНСКИЕ КНОПКИ
+    # ========================================================
+
     application.add_handler(
         CallbackQueryHandler(
             purchase_callback,
@@ -1182,6 +1302,10 @@ def main():
 
     application.run_polling()
 
+
+# ============================================================
+# ЗАПУСК
+# ============================================================
 
 if __name__ == "__main__":
     main()
