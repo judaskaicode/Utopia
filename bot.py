@@ -2,6 +2,8 @@ import asyncio
 import os
 import re
 from typing import Optional
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import aiosqlite
 from aiogram import Bot, Dispatcher, F, Router
@@ -14,14 +16,42 @@ from aiogram.fsm.storage.memory import MemoryStorage
 DB_PATH = "loyalty.sqlite"
 
 TOKEN = os.getenv("BOT_TOKEN")
+
 ADMIN_IDS = [
     int(x.strip())
     for x in os.getenv("ADMIN_IDS", "").split(",")
     if x.strip()
 ]
+
 BONUS_RATE = float(os.getenv("BONUS_RATE", "0.05"))
 
 router = Router()
+
+
+# =========================
+# RENDER HEALTH SERVER
+# =========================
+
+class HealthHandler(BaseHTTPRequestHandler):
+
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, format, *args):
+        pass
+
+
+def start_health_server():
+    port = int(os.getenv("PORT", "10000"))
+
+    server = HTTPServer(
+        ("0.0.0.0", port),
+        HealthHandler
+    )
+
+    server.serve_forever()
 
 
 # =========================
@@ -29,7 +59,9 @@ router = Router()
 # =========================
 
 async def db_init():
+
     async with aiosqlite.connect(DB_PATH) as db:
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -57,11 +89,14 @@ async def db_init():
 
 
 async def ensure_user(user_id: int):
+
     async with aiosqlite.connect(DB_PATH) as db:
+
         await db.execute(
             "INSERT OR IGNORE INTO users(user_id) VALUES(?)",
             (user_id,)
         )
+
         await db.commit()
 
 
@@ -73,6 +108,7 @@ async def create_submission(
 ) -> int:
 
     async with aiosqlite.connect(DB_PATH) as db:
+
         cur = await db.execute(
             """
             INSERT INTO submissions
@@ -88,12 +124,14 @@ async def create_submission(
         )
 
         await db.commit()
+
         return cur.lastrowid
 
 
 async def get_submission(submission_id: int):
 
     async with aiosqlite.connect(DB_PATH) as db:
+
         cur = await db.execute(
             """
             SELECT
@@ -504,8 +542,6 @@ async def admin_actions(
 
         return
 
-    # ОТКЛОНЕНИЕ
-
     if action == "reject":
 
         await set_submission_status(
@@ -529,8 +565,6 @@ async def admin_actions(
         )
 
         return
-
-    # АВТОМАТИЧЕСКОЕ НАЧИСЛЕНИЕ
 
     if action == "appr_auto":
 
@@ -577,8 +611,6 @@ async def admin_actions(
         )
 
         return
-
-    # РУЧНОЕ НАЧИСЛЕНИЕ
 
     if action == "appr_manual":
 
@@ -713,13 +745,11 @@ async def admin_manual_points(
 async def main():
 
     if not TOKEN:
-
         raise RuntimeError(
             "BOT_TOKEN не задан."
         )
 
     if not ADMIN_IDS:
-
         raise RuntimeError(
             "ADMIN_IDS не задан."
         )
@@ -744,5 +774,12 @@ async def main():
 
 
 if __name__ == "__main__":
+
+    health_thread = threading.Thread(
+        target=start_health_server,
+        daemon=True
+    )
+
+    health_thread.start()
 
     asyncio.run(main())
