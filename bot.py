@@ -1151,19 +1151,18 @@ async def admin_help(
 
 async def main():
 
+   def main():
     if not BOT_TOKEN:
-
         raise RuntimeError(
             "BOT_TOKEN не задан в Render."
         )
 
     if not ADMIN_IDS:
-
         raise RuntimeError(
             "ADMIN_IDS не задан в Render."
         )
 
-    await init_db()
+    asyncio.run(init_db())
 
     application = (
         Application
@@ -1173,7 +1172,6 @@ async def main():
     )
 
     conversation_handler = ConversationHandler(
-
         entry_points=[
             CommandHandler(
                 "purchase",
@@ -1182,7 +1180,6 @@ async def main():
         ],
 
         states={
-
             WAITING_CATEGORY: [
                 CallbackQueryHandler(
                     purchase_category,
@@ -1214,43 +1211,26 @@ async def main():
     )
 
     application.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
+        CommandHandler("start", start)
     )
 
     application.add_handler(
-        CommandHandler(
-            "balance",
-            balance
-        )
+        CommandHandler("balance", balance)
     )
 
     application.add_handler(
-        CommandHandler(
-            "redeem",
-            redeem
-        )
+        CommandHandler("redeem", redeem)
     )
 
     application.add_handler(
-        CommandHandler(
-            "clients",
-            admin_clients
-        )
+        CommandHandler("clients", admin_clients)
     )
 
     application.add_handler(
-        CommandHandler(
-            "admin",
-            admin_help
-        )
+        CommandHandler("admin", admin_help)
     )
 
-    application.add_handler(
-        conversation_handler
-    )
+    application.add_handler(conversation_handler)
 
     application.add_handler(
         CallbackQueryHandler(
@@ -1268,7 +1248,7 @@ async def main():
 
     print("🤖 Бот запущен!")
 
-    await application.run_polling(
+    application.run_polling(
         drop_pending_updates=True
     )
 
@@ -1286,4 +1266,4 @@ if __name__ == "__main__":
 
     health_thread.start()
 
-    asyncio.run(main())
+    main()
